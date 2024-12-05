@@ -1,0 +1,525 @@
+---
+title: "COSC421KelownaProject"
+author: "KenichiroAnderson"
+
+editor: visual
+format: 
+  html:
+    embed-resources: true
+  pdf:
+    keep-tex: true         
+  docx:
+    keep-md: true          
+execute:
+  echo: true
+  warning: false
+  fig-save: true          
+---
+
+## Load Library:
+
+```{r}
+if (!require("sf")) install.packages("sf")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("readr")) install.packages("readr")
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(readr)
+```
+
+## load SHP Files
+
+```{r}
+shapefile_path <- "routes.shp"
+bus_routes <- st_read("Kelowna_routes/routes.shp")
+if (st_crs(bus_routes)$epsg != 4326) {
+  bus_routes <- st_transform(bus_routes, crs = 4326)
+}
+
+print("Shapefile loaded and CRS verified.")
+```
+
+## load CSV:
+
+```{r}
+csv_path <- "Kelowna_stops.csv"
+
+bus_stops <- read_csv(csv_path, show_col_types = FALSE)
+if ("geometry" %in% names(bus_stops)) {
+  bus_stops <- bus_stops %>% select(-geometry)
+}
+bus_stops_sf <- st_as_sf(
+  bus_stops,
+  coords = c("stop_lon", "stop_lat"),
+  crs = 4326
+)
+
+print("CSV data loaded, geometry column handled, and converted to an sf object.")
+
+
+
+
+```
+
+## plot:
+
+```{r}
+ggplot() +
+  geom_sf(data = bus_routes, color = "blue", size = 0.5) +
+  geom_sf(data = bus_stops_sf, color = "red", size = .7) +
+  ggtitle("Kelowna Bus Routes and Stops") +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_minimal()
+
+```
+
+## Count number of bus stops per per Route
+
+```{r}
+stops_per_route <- st_join(bus_stops_sf, bus_routes, join = st_intersects)
+
+route_stop_counts <- stops_per_route %>%
+  group_by(route_id) %>%
+  summarise(stops = n()) %>%
+  arrange(desc(stops))
+
+print(route_stop_counts)
+
+```
+
+## Calculate length of each bus route:
+
+```{r}
+# cleaning data for valid 
+bus_routes <- st_make_valid(bus_routes)
+
+# Calculate the len of the routes in km
+bus_routes <- bus_routes %>%
+  mutate(length_km = st_length(.) / 1000)
+summary(bus_routes$length_km)
+
+```
+
+## Visualize density of bus stops
+
+```{r}
+ggplot() +
+  stat_density2d(
+    data = as.data.frame(st_coordinates(bus_stops_sf)),
+    aes(x = X, y = Y, fill = ..level..),
+    geom = "polygon",
+    contour = TRUE
+  ) +
+  scale_fill_viridis_c() +
+  ggtitle("Density of Bus Stops in Kelowna") +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_minimal()
+
+```
+
+## Cluster analysis of bus stops:
+
+```{r}
+stop_coords <- st_coordinates(bus_stops_sf)
+# k means culster k =5
+set.seed(60531845)
+clusters <- kmeans(stop_coords, centers = 5)
+bus_stops_sf <- bus_stops_sf %>%
+  mutate(cluster = as.factor(clusters$cluster))
+
+# Plot clusters
+ggplot() +
+  geom_sf(data = bus_routes, color = "blue", size = 0.5) +
+  geom_sf(data = bus_stops_sf, aes(color = cluster), size = 2) +
+  ggtitle("Clustering of Bus Stops") +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_minimal()
+
+```
+
+## buffer analysis by stops:
+
+```{r}
+# 500 meter buffer made
+stop_buffers <- st_buffer(bus_stops_sf, dist = 500)
+ggplot() +
+  geom_sf(data = bus_routes, color = "blue", size = 0.5) +
+  geom_sf(data = stop_buffers, fill = "orange", alpha = 0.3) +
+  geom_sf(data = bus_stops_sf, color = "red", size = 1) +
+  ggtitle("Buffer Zones Around Bus Stops (500m)") +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme_minimal()
+
+```
+
+## Make new Graph function
+
+```{r}
+if (!require("igraph")) install.packages("igraph")
+library(igraph)
+
+stops_coords <- st_coordinates(bus_stops_sf)
+edges <- data.frame(
+  from = sample(1:nrow(stops_coords), size = 100, replace = TRUE), # Random connections for demo
+  to = sample(1:nrow(stops_coords), size = 100, replace = TRUE)
+)
+
+bus_graph <- graph_from_data_frame(d = edges, directed = FALSE)
+
+print(summary(bus_graph))
+
+```
+
+## Betweeness centrality
+
+```{r}
+betweenness_centrality <- betweenness(bus_graph, directed = FALSE)
+top_betweenness <- sort(betweenness_centrality, decreasing = TRUE)[1:5]
+top_indices <- names(top_betweenness)
+top_indices <- as.integer(top_indices)
+stop_names <- bus_stops$stop_name[top_indices]
+
+print("Top 5 stops by betweenness centrality:")
+print(data.frame(Stop_Name = stop_names, Betweenness = top_betweenness))
+
+
+```
+
+## Individual Degree Calcualtions
+
+```{r}
+node_degrees <- degree(bus_graph)
+hub_nodes <- sort(node_degrees, decreasing = TRUE)[1:5]
+top_indices <- names(hub_nodes)
+top_indices <- as.integer(top_indices)
+stop_names <- bus_stops$stop_name[top_indices]
+print("Top 5 hubs (most connected stops):")
+print(data.frame(Stop_Name = stop_names, Degree = hub_nodes))
+```
+
+## degree centrality map:
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(viridis)
+library(igraph)
+stops_path <- "Kelowna_stops.csv"  
+routes_path <- "Kelowna_routes/routes.shp"  
+kelowna_stops <- read_csv(stops_path, show_col_types = FALSE)
+if ("geometry" %in% names(kelowna_stops)) {
+  kelowna_stops <- kelowna_stops %>% select(-geometry)
+}
+kelowna_stops <- st_as_sf(
+  kelowna_stops,
+  coords = c("stop_lon", "stop_lat"),
+  crs = 4326
+)
+
+stop_coords <- st_coordinates(kelowna_stops)
+edge_list <- data.frame(
+  from = sample(1:nrow(stop_coords), size = 100, replace = TRUE),  
+  to = sample(1:nrow(stop_coords), size = 100, replace = TRUE)
+)
+bus_graph <- graph_from_data_frame(d = edge_list, vertices = kelowna_stops, directed = FALSE)
+kelowna_stops$degree_centrality <- degree(bus_graph, mode = "all")
+node_data <- data.frame(
+  lon = st_coordinates(kelowna_stops)[, 1],
+  lat = st_coordinates(kelowna_stops)[, 2],
+  degree = kelowna_stops$degree_centrality
+)
+ggplot(node_data, aes(x = lon, y = lat)) +
+  geom_point(aes(color = degree, size = degree), alpha = 0.7) + 
+  scale_color_viridis_c(option = "inferno") +  # Change color scale if needed
+  scale_size(range = c(1, 5)) +  # Adjust size range for clarity
+  theme_minimal() +
+  labs(
+    title = "Degree Centrality of Bus Stops in Kelowna",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Degree Centrality",
+    size = "Degree Centrality"
+  ) +
+  theme(
+    legend.position = "right",  
+    legend.key.size = unit(0.5, "cm"),
+    aspect.ratio = 0.8  
+  )
+
+```
+
+## Eigenvector Centrality
+
+```{r}
+eigenvector_centrality <- eigen_centrality(bus_graph)$vector
+top_eigenvector <- sort(eigenvector_centrality, decreasing = TRUE)[1:5]
+top_indices <- names(top_eigenvector)
+top_indices <- as.integer(top_indices)
+stop_names <- bus_stops$stop_name[top_indices]
+print("Top 5 stops by eigenvector centrality:")
+print(data.frame(Stop_Name = stop_names, Eigenvector_Centrality = top_eigenvector))
+```
+
+## eigenvector centrality map
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(viridis)
+library(igraph)
+stops_path <- "Kelowna_stops.csv"  
+routes_path <- "Kelowna_routes/routes.shp"  
+kelowna_stops <- read_csv(stops_path, show_col_types = FALSE)
+if ("geometry" %in% names(kelowna_stops)) {
+  kelowna_stops <- kelowna_stops %>% select(-geometry)
+}
+kelowna_stops <- st_as_sf(
+  kelowna_stops,
+  coords = c("stop_lon", "stop_lat"),
+  crs = 4326
+)
+stop_coords <- st_coordinates(kelowna_stops)
+edge_list <- data.frame(
+  from = sample(1:nrow(stop_coords), size = 100, replace = TRUE),  
+  to = sample(1:nrow(stop_coords), size = 100, replace = TRUE)
+)
+bus_graph <- graph_from_data_frame(d = edge_list, vertices = kelowna_stops, directed = FALSE)
+kelowna_stops$eigenvector_centrality <- eigen_centrality(bus_graph, directed = FALSE)$vector
+node_data <- data.frame(
+  lon = st_coordinates(kelowna_stops)[, 1],
+  lat = st_coordinates(kelowna_stops)[, 2],
+  eigenvector = kelowna_stops$eigenvector_centrality
+)
+
+ggplot(node_data, aes(x = lon, y = lat)) +
+  geom_point(aes(color = eigenvector, size = eigenvector), alpha = 0.7) + 
+  scale_color_viridis_c(option = "inferno") +  
+  scale_size(range = c(1, 9.5)) +  
+  theme_minimal() +
+  labs(
+    title = "Eigenvector Centrality of Bus Stops in Kelowna",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Eigenvector Centrality",
+    size = "Eigenvector Centrality"
+  ) +
+  theme(
+    legend.position = "right",  
+    legend.key.size = unit(0.5, "cm"),
+    aspect.ratio = 0.8  
+  )
+
+```
+
+## Grouped Exchanges to calculate all of the above metrics
+
+```{r}
+
+ubco_stops <- c("UBCO Exchange", "UBCO Campus")  
+mall_stops <- grep("Orchard Park", bus_stops$stop_name, value = TRUE)   
+queensway_stops <- grep("Queensway Exchange", bus_stops$stop_name, value = TRUE)
+westbank_stops <- grep("Westbank Exchange", bus_stops$stop_name, value = TRUE)
+boucherie_stops <- grep("Boucherie Mountain Exchange", bus_stops$stop_name, value = TRUE)
+rutland_stops <- grep("Rutland Exchange", bus_stops$stop_name, value = TRUE)
+okanagan_college_stops <- grep("Okanagan College Exchange", bus_stops$stop_name, value = TRUE)
+kelowna_hospital_stops <- grep("Kelowna General Hospital", bus_stops$stop_name, value = TRUE)
+south_pandosy_stops <- grep("South Pandosy Exchange", bus_stops$stop_name, value = TRUE)
+all_exchange_stops <- c(ubco_stops, mall_stops, queensway_stops, westbank_stops, boucherie_stops,rutland_stops, okanagan_college_stops, kelowna_hospital_stops, south_pandosy_stops)
+node_degrees <- degree(bus_graph)
+exchange_degrees <- node_degrees[which(bus_stops$stop_name %in% all_exchange_stops)]
+degree_df <- data.frame(Stop_Name = bus_stops$stop_name[which(bus_stops$stop_name %in% all_exchange_stops)],
+                        Degree_Centrality = exchange_degrees)
+strip_bay_and_after <- function(stop_name) {
+  gsub(" Bay.*", "", stop_name)  
+}
+degree_df$Stop_Name <- sapply(degree_df$Stop_Name, strip_bay_and_after)
+degree_df_grouped <- degree_df %>%
+  group_by(Stop_Name) %>%
+  summarise(Degree_Centrality = sum(Degree_Centrality))
+print("Degree Centrality for Specified Stops (grouped by exchange names):")
+print(degree_df_grouped)
+betweenness_centrality <- betweenness(bus_graph, directed = FALSE)
+exchange_betweenness <- betweenness_centrality[which(bus_stops$stop_name %in% all_exchange_stops)]
+betweenness_df <- data.frame(Stop_Name = bus_stops$stop_name[which(bus_stops$stop_name %in% all_exchange_stops)],
+                             Betweenness_Centrality = exchange_betweenness)
+
+betweenness_df$Stop_Name <- sapply(betweenness_df$Stop_Name, strip_bay_and_after)
+
+betweenness_df_grouped <- betweenness_df %>%
+  group_by(Stop_Name) %>%
+  summarise(Betweenness_Centrality = sum(Betweenness_Centrality))
+
+print("Betweenness Centrality for Specified Stops (grouped by exchange names):")
+print(betweenness_df_grouped)
+
+eigenvector_centrality <- eigen_centrality(bus_graph)$vector
+
+exchange_eigenvector <- eigenvector_centrality[which(bus_stops$stop_name %in% all_exchange_stops)]
+
+eigenvector_df <- data.frame(Stop_Name = bus_stops$stop_name[which(bus_stops$stop_name %in% all_exchange_stops)],
+                              Eigenvector_Centrality = exchange_eigenvector)
+
+eigenvector_df$Stop_Name <- sapply(eigenvector_df$Stop_Name, strip_bay_and_after)
+
+eigenvector_df_grouped <- eigenvector_df %>%
+  group_by(Stop_Name) %>%
+  summarise(Eigenvector_Centrality = sum(Eigenvector_Centrality))
+
+print("Eigenvector Centrality for Specified Stops (grouped by exchange names):")
+print(eigenvector_df_grouped)
+```
+
+## Metrics that show us how well the network is made:
+
+-   Efficency of the network
+
+-   Redundancy = finding if there are alternate paths between nodes high redundancy = robust network
+
+-   Robustness = determining if the graph is fully connected. ensuring you can make it anywhere no matter where you start
+
+-   Transitivity = finding how interconnected the network is
+
+## Bottlenecks:
+
+```{r}
+node_betweenness <- betweenness(bus_graph, directed = FALSE)
+kelowna_stops$betweenness <- node_betweenness
+top_bottlenecks <- kelowna_stops %>%
+  arrange(desc(betweenness)) %>%
+  head(5)
+print("Top Bottleneck Nodes:")
+print(top_bottlenecks)
+
+```
+
+## Efficiency of the network
+
+```{r}
+avg_path_length <- mean_distance(bus_graph, directed = FALSE)
+print(paste("Average Path Length:", avg_path_length))
+network_diameter <- diameter(bus_graph, directed = FALSE)
+print(paste("Network Diameter:", network_diameter))
+
+```
+
+## Robustness:
+
+```{r}
+is_connected <- is_connected(bus_graph)
+print(paste("Is the network connected?", is_connected))
+# Simulate node removal
+robustness_test <- function(graph, n = 5) {
+  removed_nodes <- V(graph)[order(degree(graph), decreasing = TRUE)[1:n]]
+  graph_removed <- delete_vertices(graph, removed_nodes)
+  is_connected(graph_removed)
+}
+# Test robustness after removing top 5 nodes
+robustness_after_removal <- robustness_test(bus_graph, n = 5)
+print(paste("Is the network connected after removing top 5 nodes?", robustness_after_removal))
+```
+
+## Heatmap of Betweenness Centrality
+
+```{r}
+library(igraph)
+library(ggplot2)
+library(viridis)
+library(sf)
+if (!inherits(kelowna_stops, "sf")) {
+  kelowna_stops <- st_as_sf(kelowna_stops, coords = c("stop_lon", "stop_lat"), crs = 4326)
+}
+
+bus_graph <- graph_from_data_frame(d = edge_list, vertices = kelowna_stops, directed = FALSE)
+
+kelowna_stops$betweenness <- betweenness(bus_graph, directed = FALSE)
+if (length(kelowna_stops$betweenness) != nrow(kelowna_stops)) {
+  stop("Mismatch in lengths of betweenness and number of stops.")
+}
+
+node_data <- data.frame(
+  lon = st_coordinates(kelowna_stops)[, 1],
+  lat = st_coordinates(kelowna_stops)[, 2],
+  betweenness = kelowna_stops$betweenness
+)
+
+betweenness_plot <- ggplot(node_data, aes(x = lon, y = lat)) +
+  geom_point(aes(color = betweenness, size = betweenness), alpha = 0.7) +
+  scale_color_viridis_c(option = "C") +
+  scale_size(range = c(1, 9.5)) +
+  theme_minimal() +
+  labs(
+    title = "Heatmap of Betweenness Centrality",
+    x = "Longitude",
+    y = "Latitude",
+    color = "Betweenness",
+    size = "Betweenness"
+  )
+print(betweenness_plot)
+```
+
+-   **High Betweenness Centrality:**
+
+    -   These are critical "bottleneck" stops through which many routes or connections pass.
+
+    -   Disruptions at these stops could significantly affect network connectivity.
+
+    -   Examples: Major transit hubs, transfer points, or central stops.
+
+-   **Low Betweenness Centrality:**
+
+    -   These stops are less critical for connecting other stops.
+
+    -   They are often endpoints or stops with few connections.
+
+## Betweenness centrality heatmap with underlay of proper map
+
+```{r}
+if (!require("leaflet")) install.packages("leaflet")
+if (!require("sf")) install.packages("sf")
+library(leaflet)
+library(sf)
+
+node_data <- data.frame(
+  lon = st_coordinates(kelowna_stops)[, 1],
+  lat = st_coordinates(kelowna_stops)[, 2],
+  betweenness = kelowna_stops$betweenness
+)
+leaflet(node_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    ~lon, ~lat,
+    color = ~colorNumeric("viridis", betweenness)(betweenness),
+    radius = ~sqrt(betweenness) * 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    popup = ~paste0(
+      "<strong>Betweenness Centrality:</strong> ", round(betweenness, 2),
+      "<br><strong>Longitude:</strong> ", round(lon, 4),
+      "<br><strong>Latitude:</strong> ", round(lat, 4)
+    )
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = colorNumeric("viridis", node_data$betweenness),
+    values = node_data$betweenness,
+    title = "Betweenness Centrality",
+    opacity = 1
+  ) %>%
+  setView(
+    lng = mean(node_data$lon),  
+    lat = mean(node_data$lat),
+    zoom = 12  
+  )
+
+
+```
+
+# END
